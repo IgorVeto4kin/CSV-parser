@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include<ctype.h>
+
+
 #define MAX_LINE_NUMBER 4096
 
 char** split_by_comma(const char* input, size_t* count) {
@@ -11,9 +15,8 @@ char** split_by_comma(const char* input, size_t* count) {
         }
 
     }
-    *count = delimiters + 1;
+    *count = delimiters+1;
 
-    // 2. Выделяем массив указателей
     char** result = malloc(*count * sizeof(char*));
 
     const char* start = input;
@@ -48,6 +51,7 @@ struct Cell{
     char* arg1;
     char* arg2;
     char op;
+    char visiting;
 };
 
 struct row{
@@ -55,62 +59,201 @@ struct row{
     //struct Cell [<количество столбцов, задается в main (считывается из файла)>];
      struct Cell* cells;
 };
-   struct row table[MAX_LINE_NUMBER] = {0};
+
+struct row table[MAX_LINE_NUMBER] = {0};
+//size_t col_numbers;
+char** column_titels;
+
+void print_table(size_t cols) {
+    for (size_t i = 0; i < MAX_LINE_NUMBER; i++) {
+        if (table[i].cells == NULL) continue; // пропускаем непарсенные строки
+         printf("%d,", table[i].num);
+        for (size_t j = 1; j < cols; j++) {
+            struct Cell* c = &table[i].cells[j];
+            
+            printf("%d,", c->value);
+             
+        }
+        printf("\n");
+    }
+}
+
+
+
+int find_col_index(const char* name, size_t col_numbers ) {
+    for (size_t i = 0; i < col_numbers; i++) {
+        if (column_titels[i] && strcmp(column_titels[i], name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1; 
+}
+
+int parse_cell_ref(const char* ref, int* out_row, char* out_col_name, size_t max_len) {
+    if (!ref || !*ref) return -1;
+
+    const char* p = ref;
+    while (*p && !isdigit((unsigned char)*p)) p++;
+    if (*p == '\0') return -1; // Нет цифр -> невалидная ссылка
+
+    size_t prefix_len = p - ref;
+    if (prefix_len == 0 || prefix_len >= max_len) return -1;
+
+    strncpy(out_col_name, ref, prefix_len);
+    out_col_name[prefix_len] = '\0';
+    *out_row = atoi(p);
+    return 0;
+}
+
+int solve_cell(int row_idx, size_t col_idx, size_t col_numbers);
+
+int get_value_by_name(const char* ref, int* out_val, size_t col_numbers) {
+    if (!ref) return -1;
+
+    if (isdigit((unsigned char)ref[0]) || (ref[0] == '-' && isdigit((unsigned char)ref[1]))) {
+        *out_val = atoi(ref);
+        return 0;
+    }
+
+    int row_num;
+    char col_name[64];
+    if (parse_cell_ref(ref, &row_num, col_name, sizeof(col_name)) != 0) {
+        fprintf(stderr, "Invalid cell name. Aborted\n");
+        return -1;
+    }
+
+    
+    if (row_num < 0 || row_num >= MAX_LINE_NUMBER || !table[row_num].cells) {
+        fprintf(stderr, " Row didn't found.Aborted\n");
+        return -1;
+    }
+
+    int col_idx = find_col_index(col_name, col_numbers);
+    if (col_idx < 0 || col_idx >= col_numbers) {
+        fprintf(stderr, "Colonm not found. Aborted\n");
+        return -1;
+    }
+
+    struct Cell* target = &table[row_num].cells[col_idx];
+
+    if (target->flag_solved) {
+        *out_val = target->value;
+        return 0;
+    }
+
+    
+    if (target->visiting) {
+        fprintf(stderr, " Cycle found. Aborted\n");
+        return -2;
+    }
+
+    target->visiting = 1;
+    int res = solve_cell(row_num, col_idx, col_numbers);
+    target->visiting = 0;
+
+    if (res == 0) {
+        *out_val = target->value;
+        return 0;
+    }
+    return res;
+}
+
+int solve_cell(int row_idx, size_t col_idx, size_t col_numbers) {
+    struct Cell* cell = &table[row_idx].cells[col_idx];
+    if (cell->flag_solved) return 0;
+
+    int val1 = 0, val2 = 0;
+
+    if (get_value_by_name(cell->arg1, &val1,  col_numbers) != 0) return -1;
+    if (get_value_by_name(cell->arg2, &val2,  col_numbers) != 0) return -1;
+   
+    //printf("solving bitch");
+    int result = 0;
+    switch (cell->op) {
+        case '+': result = val1 + val2; break;
+        case '-': result = val1 - val2; break;
+        case '*': result = val1 * val2; break;
+        case '/':
+            if (val2 == 0) {
+                fprintf(stderr, " Zero dividing found.Aborted\n");
+                return -1;
+            }
+            result = val1 / val2; break;
+    }
+
+    cell->value = result;
+    cell->flag_solved = 1;
+    return 0;
+}
+
+void evaluate_table(size_t col_numbers) {
+    
+    
+    for (size_t i = 0; i < MAX_LINE_NUMBER; i++) {
+        if (table[i].cells == NULL) continue;
+        for (size_t j = 0; j < col_numbers; j++) {
+            
+            if (table[i].cells[j].flag_solved) continue; 
+            
+            int status = solve_cell(i, j, col_numbers);
+            
+            if (status == -2) {
+                printf("Self-reference found. Aborted\n");
+                return;
+            }
+        }
+    }
+}
+
 
 int main(int argc, char *argv[]) {
-    //opening file and parsing
  
     int row_idx = 0;
 
     FILE *file = fopen(argv[1], "r");
   
-    char *line = NULL;      // указатель на буфер строки
-    size_t len = 0;         // размер буфера (0 для начального выделения)
-    size_t nread;          // количество прочитанных байт
+    char *line = NULL;      // row buf
+    size_t len = 0;         // size
+    size_t nread;          
     size_t col_numbers; //numbers of colomns
     getline(&line, &len, file);
-    char** colomn_titels = split_by_comma(line, &col_numbers);
- while ((nread = getline(&line, &len, file)) != -1) {
-        // 1. Отрезаем перевод строки
+    line[strcspn(line, "\r\n")] = '\0';
+    column_titels = split_by_comma(line, &col_numbers);
+    
+    
+    while ((nread = getline(&line, &len, file)) != -1) {
         line[strcspn(line, "\r\n")] = '\0';
-        if (line[0] == '\0') continue; // пропускаем пустые строки
 
-        // 2. Первый токен всегда номер строки
         char* token = strtok(line, ",");
         if (!token) continue;
 
         int row_num = atoi(token);
-        if (row_num < 0 || row_num >= MAX_LINE_NUMBER) {
-            fprintf(stderr, "Warning: row %d out of bounds, skipped.\n", row_num);
-            continue;
-        }
-
-        // 3. Если строка встречается впервые, выделяем память под ячейки
         if (table[row_num].cells == NULL) {
             table[row_num].num = row_num;
             table[row_num].cells = calloc(col_numbers, sizeof(struct Cell));
             
-            // Базовая инициализация ячеек
             for (size_t c = 0; c < col_numbers; c++) {
                 table[row_num].cells[c].flag_solved = 0;
                 table[row_num].cells[c].value = 0;
                 table[row_num].cells[c].op = 0;
                 table[row_num].cells[c].arg1 = NULL;
                 table[row_num].cells[c].arg2 = NULL;
+                table[row_num].cells[c].visiting = 0;
                 
-                // Генерируем имя столбца (Col0, Col1, ...)
                 char cname[16];
                 snprintf(cname, sizeof(cname), "Col%zu", c);
                 table[row_num].cells[c].col_name = strdup(cname);
             }
         }
+        else{
+            printf("Duplicated string numbers, aborted\n");
+            return 1;
+        }
 
-        // 4. Парсим данные столбцов
-        for (size_t col = 0; col < col_numbers; col++) {
+        for (size_t col = 1; col <= col_numbers; col++) {
             token = strtok(NULL, ",");
-            if (!token) break; // в файле может быть меньше столбцов
+            if (!token) break; 
 
-            // Убираем ведущие/ведомые пробелы
             while (*token == ' ') token++;
             char* end = token + strlen(token) - 1;
             while (end > token && *end == ' ') *end-- = '\0';
@@ -118,29 +261,22 @@ int main(int argc, char *argv[]) {
             struct Cell* cell = &table[row_num].cells[col];
 
             if (token[0] == '=') {
-                // === ФОРМУЛА ===
+                
                 cell->flag_solved = 0;
-                char* expr = token + 1; // пропускаем '='
+                char* expr = token + 1;
                 char* op_ptr = strpbrk(expr, "+-*/");
-
-                if (op_ptr) {
-                    cell->op = *op_ptr;
-                    size_t len1 = op_ptr - expr;
-                    cell->arg1 = malloc(len1 + 1);
-                    strncpy(cell->arg1, expr, len1);
-                    cell->arg1[len1] = '\0';
-                    cell->arg2 = strdup(op_ptr + 1);
-                } else {
-                    // Формула без оператора (напр. =A1)
-                    cell->arg1 = strdup(expr);
-                    cell->arg2 = NULL;
-                    cell->op = 0;
-                }
-            } else {
-                // === ЧИСЛО ===
+  
+                cell->op = *op_ptr;
+                size_t len1 = op_ptr - expr;
+                cell->arg1 = malloc(len1 + 1);
+                strncpy(cell->arg1, expr, len1);
+                cell->arg1[len1] = '\0';
+                cell->arg2 = strdup(op_ptr + 1);
+                
+            }
+            else {
                 cell->flag_solved = 1;
                 cell->value = atoi(token);
-                // Очищаем поля формулы, если ячейка перезаписывается
                 free(cell->arg1); free(cell->arg2);
                 cell->arg1 = NULL;
                 cell->arg2 = NULL;
@@ -149,7 +285,14 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    print_table(col_numbers-1);
+    //print_table(col_numbers);
+    
+    evaluate_table( col_numbers);
+    for(int i = 1; i< col_numbers; ++i){
+        printf(",%s", column_titels[i]);
+    }
+    printf("\n");
+    print_table(col_numbers);
     free(line);
     fclose(file);
     return EXIT_SUCCESS;
